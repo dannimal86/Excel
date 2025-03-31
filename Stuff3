@@ -1,0 +1,376 @@
+Sub ProcessTradingLimits()
+
+  ' --- 1. Variable Declarations ---
+  Dim staticDataSheet As Worksheet, cqgDataSheet As Worksheet, ttDataSheet As Worksheet, fidessaDataSheet As Worksheet
+  Dim cqgOutputSheet As Worksheet, ttOutputSheet As Worksheet, fidessaOutputSheet As Worksheet
+  Dim staticDataLastRow As Long, cqgDataLastRow As Long, ttDataLastRow As Long, fidessaDataLastRow As Long
+  Dim i As Long, j As Long 'Loop counters
+  Dim exchange As String, product As String, family As String, assetClass As String
+  Dim tradeSizeLimit As Double, contractPositionLimit As Double, commodityPositionLimit As Double
+  Dim maxOrderQuantity As Double, maxPositionProductNet As Double, spreadsMaxOrderQuantity As Double
+  Dim maxOrdSize As Double, maxPosSize As Double, maxSpreadPos As Double
+  Dim maxValue As Double, netValue As Double
+  Dim isOption As Boolean, isSpread As Boolean
+  Dim maxMultiplier As Double, netMultiplier As Double
+  Dim checkValue As String, newMaxValue As Variant, newNetValue As Variant 'Using Variant to allow for "NA" string
+  Dim staticData As Variant 'To hold the static data for faster lookup
+  Dim lastColumn As Long
+
+  ' --- 2. Worksheet Assignments ---
+  Set staticDataSheet = ThisWorkbook.Sheets("StaticData") 'Change "StaticData" to your sheet name
+  Set cqgDataSheet = ThisWorkbook.Sheets("CQGData")       'Change "CQGData" to your sheet name
+  Set ttDataSheet = ThisWorkbook.Sheets("TTData")         'Change "TTData" to your sheet name
+  Set fidessaDataSheet = ThisWorkbook.Sheets("FidessaData")   'Change "FidessaData" to your sheet name
+
+  ' --- 3. Create Output Sheets ---
+  Set cqgOutputSheet = CreateSafeSheet("CQG_Output")
+  Set ttOutputSheet = CreateSafeSheet("TT_Output")
+  Set fidessaOutputSheet = CreateSafeSheet("Fidessa_Output")
+
+  ' --- 4. Get Last Row Numbers ---
+  staticDataLastRow = staticDataSheet.Cells(Rows.Count, "A").End(xlUp).Row 'Assuming data starts in column A
+  cqgDataLastRow = cqgDataSheet.Cells(Rows.Count, "A").End(xlUp).Row
+  ttDataLastRow = ttDataSheet.Cells(Rows.Count, "A").End(xlUp).Row
+  fidessaDataLastRow = fidessaDataSheet.Cells(Rows.Count, "A").End(xlUp).Row
+
+  ' --- 5. Load Static Data into Array (for faster lookup) ---
+  ' Assuming Fidessa Exchange is in Column A, CQG Exchange in B, TT Exchange in C, Fidessa Code in D, CQG Code in E, TT Code in F, Max in H, Net in I
+  staticData = staticDataSheet.Range("A1:I" & staticDataLastRow).Value
+
+  ' --- 6. CQG Data Processing ---
+   'Determine the last column in the CQG Data sheet
+    lastColumn = cqgDataSheet.Cells(1, Columns.Count).End(xlToLeft).Column
+
+  ' Copy headers from input sheet to output sheet
+  cqgDataSheet.Rows(1).Copy cqgOutputSheet.Rows(1)
+
+  ' Add headers to output sheet
+  cqgOutputSheet.Cells(1, lastColumn + 1).Value = "Check"
+  cqgOutputSheet.Cells(1, lastColumn + 2).Value = "new_max"
+  cqgOutputSheet.Cells(1, lastColumn + 3).Value = "new_net"
+
+  For i = 2 To cqgDataLastRow 'Start from row 2 to skip headers
+    'Initialize variables for each row
+    checkValue = ""
+    newMaxValue = "NA"
+    newNetValue = "NA"
+
+    'Get the values from the row
+    exchange = CStr(cqgDataSheet.Cells(i, "D").Value) 'Exchange is in column D
+    product = CStr(cqgDataSheet.Cells(i, "E").Value)  'Product is in column E
+
+    'Error handling to ensure that the values can be converted to double
+    If IsNumeric(cqgDataSheet.Cells(i, "H").Value) Then
+      tradeSizeLimit = CDbl(cqgDataSheet.Cells(i, "H").Value) 'Trade Size Limit is in column H
+    Else
+      tradeSizeLimit = 0
+    End If
+
+    If IsNumeric(cqgDataSheet.Cells(i, "I").Value) Then
+      contractPositionLimit = CDbl(cqgDataSheet.Cells(i, "I").Value) 'Contract Position Limit is in column I
+    Else
+      contractPositionLimit = 0
+    End If
+
+    If IsNumeric(cqgDataSheet.Cells(i, "J").Value) Then
+      commodityPositionLimit = CDbl(cqgDataSheet.Cells(i, "J").Value) 'Commodity Position Limit is in column J
+    Else
+      commodityPositionLimit = 0
+    End If
+
+    'Check for Null before converting to string
+    If IsNull(cqgDataSheet.Cells(i, "F").Value) Then
+        type = "" 'Or some other default value
+    Else
+        type = CStr(cqgDataSheet.Cells(i, "F").Value) 'Type is in column F
+    End If
+
+    isOption = (InStr(1, type, "Call option", vbTextCompare) > 0) Or (InStr(1, type, "Put option", vbTextCompare) > 0)
+
+    'Find matching row in static_data (using the array)
+    Dim matchingRow As Long
+    matchingRow = 0 'Initialize to 0, meaning no match
+
+    For j = 2 To staticDataLastRow 'Loop through static data (start from row 2)
+        If staticData(j, 2) = exchange And staticData(j, 5) = product Then 'CQG Exchange is column 2, CQG Code is column 5 in staticData
+            matchingRow = j
+            Exit For 'Exit loop once a match is found
+        End If
+    Next j
+
+    If matchingRow = 0 Then
+        checkValue = "ILLIQUID PRODUCT"
+    Else
+        maxValue = staticData(matchingRow, 8) 'Max value is in column 8
+        netValue = staticData(matchingRow, 9)  'Net value is in column 9
+
+        maxMultiplier = IIf(isOption, 2, 1)
+        netMultiplier = IIf(isOption, 2, 1)
+
+        'Compare Trade Size Limit against Max
+        If tradeSizeLimit > (maxValue * maxMultiplier) Then
+            checkValue = "EXCEPTION"
+            newMaxValue = maxValue
+        Else
+            checkValue = "PASS"
+        End If
+
+        'Compare Contract Position Limit and Commodity Position Limit against Net
+        If contractPositionLimit > (netValue * netMultiplier) Or commodityPositionLimit > (netValue * netMultiplier) Then
+            checkValue = "EXCEPTION"
+            newNetValue = netValue
+        Else
+            If checkValue = "PASS" Then
+              checkValue = "PASS"
+            End If
+        End If
+    End If
+
+     'Write the results to the output sheet
+    cqgOutputSheet.Cells(i, lastColumn + 1).Value = checkValue
+    cqgOutputSheet.Cells(i, lastColumn + 2).Value = newMaxValue
+    cqgOutputSheet.Cells(i, lastColumn + 3).Value = newNetValue
+
+    'Copy the original row
+    cqgDataSheet.Rows(i).Copy cqgOutputSheet.Rows(i)
+
+  Next i
+
+  Debug.Print "CQG data processing complete."
+
+  ' --- 7. TT Data Processing ---
+   'Determine the last column in the TT Data sheet
+    lastColumn = ttDataSheet.Cells(1, Columns.Count).End(xlToLeft).Column
+
+  ' Copy headers from input sheet to output sheet
+  ttDataSheet.Rows(1).Copy ttOutputSheet.Rows(1)
+
+  ' Add headers to output sheet
+  ttOutputSheet.Cells(1, lastColumn + 1).Value = "Check"
+  ttOutputSheet.Cells(1, lastColumn + 2).Value = "new_max"
+  ttOutputSheet.Cells(1, lastColumn + 3).Value = "new_net"
+
+
+  For i = 2 To ttDataLastRow 'Start from row 2 to skip headers
+    'Initialize variables for each row
+    checkValue = ""
+    newMaxValue = "NA"
+    newNetValue = "NA"
+
+    'Get the values from the row
+    exchange = CStr(ttDataSheet.Cells(i, "D").Value) 'Exchange is in column D
+    family = CStr(ttDataSheet.Cells(i, "E").Value)  'Family is in column E
+
+    'Error handling to ensure that the values can be converted to double
+    If IsNumeric(ttDataSheet.Cells(i, "K").Value) Then
+      maxOrderQuantity = CDbl(ttDataSheet.Cells(i, "K").Value) 'Max order quantity is in column K
+    Else
+      maxOrderQuantity = 0
+    End If
+
+    If IsNumeric(ttDataSheet.Cells(i, "M").Value) Then
+      maxPositionProductNet = CDbl(ttDataSheet.Cells(i, "M").Value) 'Max position product (net) is in column M
+    Else
+      maxPositionProductNet = 0
+    End If
+
+   'Check for Null before converting to string
+    If IsNull(ttDataSheet.Cells(i, "F").Value) Then
+        type = "" 'Or some other default value
+    Else
+        type = CStr(ttDataSheet.Cells(i, "F").Value) 'Type is in column F
+    End If
+
+    If IsNumeric(ttDataSheet.Cells(i, "N").Value) Then
+      spreadsMaxOrderQuantity = CDbl(ttDataSheet.Cells(i, "N").Value) 'Spreads:Max order quantity is in column N
+    Else
+      spreadsMaxOrderQuantity = 0
+    End If
+
+    isOption = (InStr(1, type, "Option", vbTextCompare) > 0)
+    isSpread = (InStr(1, type, "Spread", vbTextCompare) > 0) Or (InStr(1, type, "Option Strategy", vbTextCompare) > 0)
+
+    'Find matching row in static_data (using the array)
+    Dim matchingRow As Long
+    matchingRow = 0 'Initialize to 0, meaning no match
+
+    For j = 2 To staticDataLastRow 'Loop through static data (start from row 2)
+        If staticData(j, 3) = exchange And staticData(j, 6) = family Then 'TT Exchange is column 3, TT Code is column 6 in staticData
+            matchingRow = j
+            Exit For 'Exit loop once a match is found
+        End If
+    Next j
+
+    If matchingRow = 0 Then
+        checkValue = "ILLIQUID PRODUCT"
+    Else
+        maxValue = staticData(matchingRow, 8) 'Max value is in column 8
+        netValue = staticData(matchingRow, 9)  'Net value is in column 9
+
+        maxMultiplier = IIf(isOption Or isSpread, 2, 1)
+        netMultiplier = IIf(isOption Or isSpread, 2, 1)
+
+        'Compare Max Order Quantity against Max
+        Dim limitToCompare As Double
+        If isSpread Then
+            limitToCompare = spreadsMaxOrderQuantity
+        Else
+            limitToCompare = maxOrderQuantity
+        End If
+
+        If limitToCompare > (maxValue * maxMultiplier) Then
+            checkValue = "EXCEPTION"
+            newMaxValue = maxValue
+        Else
+            checkValue = "PASS"
+        End If
+
+        'Compare Max Position Product (net) against Net
+        If maxPositionProductNet > (netValue * netMultiplier) Then
+            checkValue = "EXCEPTION"
+            newNetValue = netValue
+        Else
+            If checkValue = "PASS" Then
+              checkValue = "PASS"
+            End If
+        End If
+    End If
+
+     'Write the results to the output sheet
+    ttOutputSheet.Cells(i, lastColumn + 1).Value = checkValue
+    ttOutputSheet.Cells(i, lastColumn + 2).Value = newMaxValue
+    ttOutputSheet.Cells(i, lastColumn + 3).Value = newNetValue
+
+    'Copy the original row
+    ttDataSheet.Rows(i).Copy ttOutputSheet.Rows(i)
+
+  Next i
+
+  Debug.Print "TT data processing complete."
+
+   ' --- 8. Fidessa Data Processing ---
+   'Determine the last column in the Fidessa Data sheet
+    lastColumn = fidessaDataSheet.Cells(1, Columns.Count).End(xlToLeft).Column
+
+  ' Copy headers from input sheet to output sheet
+  fidessaDataSheet.Rows(1).Copy fidessaOutputSheet.Rows(1)
+
+  ' Add headers to output sheet
+  fidessaOutputSheet.Cells(1, lastColumn + 1).Value = "Check"
+  fidessaOutputSheet.Cells(1, lastColumn + 2).Value = "new_max"
+  fidessaOutputSheet.Cells(1, lastColumn + 3).Value = "new_net"
+
+  For i = 2 To fidessaDataLastRow 'Start from row 2 to skip headers
+    'Initialize variables for each row
+    checkValue = ""
+    newMaxValue = "NA"
+    newNetValue = "NA"
+
+    'Get the values from the row
+    exchange = CStr(fidessaDataSheet.Cells(i, "E").Value) 'Exchange is in column E
+    product = CStr(fidessaDataSheet.Cells(i, "G").Value)  'Product is in column G
+
+    'Error handling to ensure that the values can be converted to double
+    If IsNumeric(fidessaDataSheet.Cells(i, "I").Value) Then
+      maxOrdSize = CDbl(fidessaDataSheet.Cells(i, "I").Value) 'Max ord size is in column I
+    Else
+      maxOrdSize = 0
+    End If
+
+    If IsNumeric(fidessaDataSheet.Cells(i, "K").Value) Then
+      maxPosSize = CDbl(fidessaDataSheet.Cells(i, "K").Value) 'Max pos size is in column K
+    Else
+      maxPosSize = 0
+    End If
+
+    If IsNumeric(fidessaDataSheet.Cells(i, "L").Value) Then
+      maxSpreadPos = CDbl(fidessaDataSheet.Cells(i, "L").Value) 'Max spread pos is in column L
+    Else
+      maxSpreadPos = 0
+    End If
+
+   'Check for Null before converting to string
+    If IsNull(fidessaDataSheet.Cells(i, "H").Value) Then
+        assetClass = "" 'Or some other default value
+    Else
+        assetClass = CStr(fidessaDataSheet.Cells(i, "H").Value) 'Asset class is in column H
+    End If
+
+    isOption = (InStr(1, assetClass, "OptOut", vbTextCompare) > 0)
+    isSpread = (InStr(1, assetClass, "FuStr", vbTextCompare) > 0) Or (InStr(1, assetClass, "OpStr", vbTextCompare) > 0)
+
+    'Find matching row in static_data (using the array)
+    Dim matchingRow As Long
+    matchingRow = 0 'Initialize to 0, meaning no match
+
+    For j = 2 To staticDataLastRow 'Loop through static data (start from row 2)
+        If staticData(j, 1) = exchange And staticData(j, 4) = product Then 'Fidessa Exchange is column 1, Fidessa Code is column 4 in staticData
+            matchingRow = j
+            Exit For 'Exit loop once a match is found
+        End If
+    Next j
+
+    If matchingRow = 0 Then
+        checkValue = "ILLIQUID PRODUCT"
+    Else
+        maxValue = staticData(matchingRow, 8) 'Max value is in column 8
+        netValue = staticData(matchingRow, 9)  'Net value is in column 9
+
+        maxMultiplier = IIf(isOption Or isSpread, 2, 1)
+        netMultiplier = IIf(isOption Or isSpread, 2, 1)
+
+        'Compare Max Order Size against Max
+        If maxOrdSize > (maxValue * maxMultiplier) Then
+            checkValue = "EXCEPTION"
+            newMaxValue = maxValue
+        Else
+            checkValue = "PASS"
+        End If
+
+        'Compare Max Position Size (or Max Spread Pos for Spreads) against Net
+        Dim limitToCompare As Double
+        If isSpread Then
+            limitToCompare = maxSpreadPos
+        Else
+            limitToCompare = maxPosSize
+        End If
+
+        If limitToCompare > (netValue * netMultiplier) Then
+            checkValue = "EXCEPTION"
+            newNetValue = netValue
+        Else
+            If checkValue = "PASS" Then
+              checkValue = "PASS"
+            End If
+        End If
+    End If
+
+     'Write the results to the output sheet
+    fidessaOutputSheet.Cells(i, lastColumn + 1).Value = checkValue
+    fidessaOutputSheet.Cells(i, lastColumn + 2).Value = newMaxValue
+    fidessaOutputSheet.Cells(i, lastColumn + 3).Value = newNetValue
+
+    'Copy the original row
+    fidessaDataSheet.Rows(i).Copy fidessaOutputSheet.Rows(i)
+
+  Next i
+
+  Debug.Print "Fidessa data processing complete."
+
+  MsgBox "All data processing complete."
+
+End Sub
+
+' --- Function to safely create a new sheet (avoiding errors if the sheet already exists) ---
+Function CreateSafeSheet(sheetName As String) As Worksheet
+  Dim ws As Worksheet
+  On Error Resume Next ' Ignore errors if sheet exists
+  Set ws = ThisWorkbook.Sheets(sheetName)
+  On Error GoTo 0 ' Re-enable error handling
+
+  If ws Is Nothing Then
+    Set ws = ThisWorkbook.Sheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+    ws.Name = sheetName
+  End If
+  Set CreateSafeSheet = ws
+End Function
